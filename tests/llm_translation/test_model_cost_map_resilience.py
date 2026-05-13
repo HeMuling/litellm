@@ -14,8 +14,6 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import litellm
@@ -108,29 +106,17 @@ class TestValidateModelCostMap:
 
     def test_should_reject_non_dict(self):
         """Non-dict should fail at check 1."""
-        assert (
-            GetModelCostMap.validate_model_cost_map(
-                fetched_map="not a dict", backup_model_count=0
-            )
-            is False
-        )
+        assert GetModelCostMap.validate_model_cost_map(fetched_map="not a dict", backup_model_count=0) is False
 
     def test_should_reject_empty_map(self):
         """Empty dict should fail at check 1."""
-        assert (
-            GetModelCostMap.validate_model_cost_map(
-                fetched_map={}, backup_model_count=0
-            )
-            is False
-        )
+        assert GetModelCostMap.validate_model_cost_map(fetched_map={}, backup_model_count=0) is False
 
     def test_should_reject_significant_shrinkage(self):
         """Should fail at check 2 (shrinkage)."""
         fetched = {f"model-{i}": {} for i in range(40)}
         assert (
-            GetModelCostMap.validate_model_cost_map(
-                fetched_map=fetched, backup_model_count=100, min_model_count=10
-            )
+            GetModelCostMap.validate_model_cost_map(fetched_map=fetched, backup_model_count=100, min_model_count=10)
             is False
         )
 
@@ -138,9 +124,7 @@ class TestValidateModelCostMap:
         """Should pass both checks."""
         fetched = {f"model-{i}": {} for i in range(120)}
         assert (
-            GetModelCostMap.validate_model_cost_map(
-                fetched_map=fetched, backup_model_count=100, min_model_count=10
-            )
+            GetModelCostMap.validate_model_cost_map(fetched_map=fetched, backup_model_count=100, min_model_count=10)
             is True
         )
 
@@ -148,9 +132,7 @@ class TestValidateModelCostMap:
         """Equal size should pass both checks."""
         fetched = {f"model-{i}": {} for i in range(100)}
         assert (
-            GetModelCostMap.validate_model_cost_map(
-                fetched_map=fetched, backup_model_count=100, min_model_count=10
-            )
+            GetModelCostMap.validate_model_cost_map(fetched_map=fetched, backup_model_count=100, min_model_count=10)
             is True
         )
 
@@ -215,6 +197,37 @@ class TestGetModelCostMapFallback:
         assert isinstance(result, dict)
         assert len(result) > 0
 
+    def test_should_preserve_local_backup_entries_missing_from_valid_remote(self):
+        """Valid upstream maps should keep local-only entries bundled with the package."""
+        local_backup = {
+            "local-only-model": {"litellm_provider": "local"},
+            "shared-model": {"litellm_provider": "local"},
+        }
+        remote_map = {
+            **{f"remote-model-{index}": {"litellm_provider": "remote"} for index in range(60)},
+            "shared-model": {"litellm_provider": "remote"},
+        }
+
+        with patch.object(
+            GetModelCostMap,
+            "fetch_remote_model_cost_map",
+            return_value=remote_map,
+        ):
+            with patch.object(
+                GetModelCostMap,
+                "_get_backup_model_count",
+                return_value=len(local_backup),
+            ):
+                with patch.object(
+                    GetModelCostMap,
+                    "load_local_model_cost_map",
+                    return_value=local_backup,
+                ):
+                    result = get_model_cost_map("https://fake-url.com/model_prices.json")
+
+        assert result["local-only-model"]["litellm_provider"] == "local"
+        assert result["shared-model"]["litellm_provider"] == "remote"
+
 
 class TestBackupModelCostMapExists:
     """Validates the local backup file is always present and valid."""
@@ -228,9 +241,7 @@ class TestBackupModelCostMapExists:
     def test_should_have_minimum_models_in_backup(self):
         """The backup must contain a reasonable number of models."""
         backup = GetModelCostMap.load_local_model_cost_map()
-        assert (
-            len(backup) > 100
-        ), f"Backup has only {len(backup)} models, expected > 100"
+        assert len(backup) > 100, f"Backup has only {len(backup)} models, expected > 100"
 
 
 class TestBadHostedModelCostMap:

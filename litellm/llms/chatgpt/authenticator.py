@@ -37,6 +37,7 @@ class Authenticator:
         self.auth_file = os.path.join(
             self.token_dir, os.getenv("CHATGPT_AUTH_FILE", "auth.json")
         )
+        self._resolved_auth_data: Optional[Dict[str, Any]] = None
         self._ensure_token_dir()
 
     def get_api_base(self) -> str:
@@ -51,11 +52,13 @@ class Authenticator:
         if auth_data:
             access_token = auth_data.get("access_token")
             if access_token and not self._is_token_expired(auth_data, access_token):
+                self._resolved_auth_data = auth_data
                 return access_token
             refresh_token = auth_data.get("refresh_token")
             if refresh_token:
                 try:
                     refreshed = self._refresh_tokens(refresh_token)
+                    self._resolved_auth_data = self._build_auth_record(refreshed)
                     return refreshed["access_token"]
                 except RefreshAccessTokenError as exc:
                     verbose_logger.warning(
@@ -66,13 +69,19 @@ class Authenticator:
         if cooldown_remaining > 0:
             token = self._wait_for_access_token(cooldown_remaining)
             if token:
+                self._resolved_auth_data = self._read_auth_file() or {
+                    "access_token": token
+                }
                 return token
 
         tokens = self._login_device_code()
+        self._resolved_auth_data = self._read_auth_file() or self._build_auth_record(
+            tokens
+        )
         return tokens["access_token"]
 
     def get_account_id(self) -> Optional[str]:
-        auth_data = self._read_auth_file()
+        auth_data = self._resolved_auth_data or self._read_auth_file()
         if not auth_data:
             return None
         account_id = auth_data.get("account_id")
@@ -83,6 +92,7 @@ class Authenticator:
         derived = self._extract_account_id(id_token or access_token)
         if derived:
             auth_data["account_id"] = derived
+            self._resolved_auth_data = auth_data
             self._write_auth_file(auth_data)
         return derived
 

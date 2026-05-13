@@ -14,8 +14,6 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import litellm
@@ -214,6 +212,43 @@ class TestGetModelCostMapFallback:
 
         assert isinstance(result, dict)
         assert len(result) > 0
+
+    def test_should_preserve_local_backup_entries_missing_from_valid_remote(self):
+        """Valid upstream maps should keep local-only entries bundled with the package."""
+        local_backup = {
+            "local-only-model": {"litellm_provider": "local"},
+            "shared-model": {"litellm_provider": "local"},
+        }
+        remote_map = {
+            **{
+                f"remote-model-{index}": {"litellm_provider": "remote"}
+                for index in range(60)
+            },
+            "shared-model": {"litellm_provider": "remote"},
+        }
+
+        with patch.dict(os.environ, {"LITELLM_LOCAL_MODEL_COST_MAP": ""}):
+            with patch.object(
+                GetModelCostMap,
+                "fetch_remote_model_cost_map",
+                return_value=remote_map,
+            ):
+                with patch.object(
+                    GetModelCostMap,
+                    "_get_backup_model_count",
+                    return_value=len(local_backup),
+                ):
+                    with patch.object(
+                        GetModelCostMap,
+                        "load_local_model_cost_map",
+                        return_value=local_backup,
+                    ):
+                        result = get_model_cost_map(
+                            "https://fake-url.com/model_prices.json"
+                        )
+
+        assert result["local-only-model"]["litellm_provider"] == "local"
+        assert result["shared-model"]["litellm_provider"] == "remote"
 
 
 class TestBackupModelCostMapExists:

@@ -56,16 +56,14 @@ class GetModelCostMap:
         """Check 1: fetched map is a non-empty dict."""
         if not isinstance(fetched_map, dict):
             verbose_logger.warning(
-                "LiteLLM: Fetched model cost map is not a dict (type=%s). "
-                "Falling back to local backup.",
+                "LiteLLM: Fetched model cost map is not a dict (type=%s). Falling back to local backup.",
                 type(fetched_map).__name__,
             )
             return False
 
         if len(fetched_map) == 0:
             verbose_logger.warning(
-                "LiteLLM: Fetched model cost map is empty. "
-                "Falling back to local backup.",
+                "LiteLLM: Fetched model cost map is empty. Falling back to local backup.",
             )
             return False
 
@@ -241,6 +239,20 @@ def _expand_model_aliases(model_cost: dict) -> dict:
     return model_cost
 
 
+def _preserve_local_backup_entries(remote_model_cost: dict) -> dict:
+    """
+    Merge valid remote model costs with bundled local entries.
+
+    The hosted map remains authoritative for shared keys, but local-only entries
+    bundled with a development build should not disappear just because the
+    hosted map has not caught up yet.
+    """
+    local_model_cost = GetModelCostMap.load_local_model_cost_map()
+    merged_model_cost = dict(local_model_cost)
+    merged_model_cost.update(remote_model_cost)
+    return merged_model_cost
+
+
 def get_model_cost_map(url: str) -> dict:
     """
     Public entry point — returns the model cost map dict.
@@ -269,8 +281,7 @@ def get_model_cost_map(url: str) -> dict:
         content = GetModelCostMap.fetch_remote_model_cost_map(url)
     except Exception as e:
         verbose_logger.warning(
-            "LiteLLM: Failed to fetch remote model cost map from %s: %s. "
-            "Falling back to local backup.",
+            "LiteLLM: Failed to fetch remote model cost map from %s: %s. Falling back to local backup.",
             url,
             str(e),
         )
@@ -284,8 +295,7 @@ def get_model_cost_map(url: str) -> dict:
         backup_model_count=GetModelCostMap._get_backup_model_count(),
     ):
         verbose_logger.warning(
-            "LiteLLM: Fetched model cost map failed integrity check. "
-            "Using local backup instead. url=%s",
+            "LiteLLM: Fetched model cost map failed integrity check. Using local backup instead. url=%s",
             url,
         )
         _cost_map_source_info.source = "local"
@@ -296,4 +306,4 @@ def get_model_cost_map(url: str) -> dict:
 
     _cost_map_source_info.source = "remote"
     _cost_map_source_info.fallback_reason = None
-    return _expand_model_aliases(content)
+    return _expand_model_aliases(_preserve_local_backup_entries(content))

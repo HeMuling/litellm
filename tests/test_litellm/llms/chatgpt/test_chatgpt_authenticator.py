@@ -1,7 +1,7 @@
 import base64
 import json
 import time
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -55,9 +55,7 @@ class TestChatGPTAuthenticator:
             assert token == "token-new"
 
     def test_get_account_id_from_id_token(self, authenticator):
-        id_token = _make_jwt(
-            {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-123"}}
-        )
+        id_token = _make_jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-123"}})
         auth_data = json.dumps({"id_token": id_token})
 
         with (
@@ -68,3 +66,32 @@ class TestChatGPTAuthenticator:
             assert account_id == "acct-123"
             mock_write.assert_called_once()
             assert mock_write.call_args[0][0]["account_id"] == "acct-123"
+
+    def test_refresh_uses_refreshed_account_identity(self, authenticator):
+        old_id_token = _make_jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-old"}})
+        new_id_token = _make_jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-new"}})
+        authenticator._read_auth_file = MagicMock(
+            return_value={
+                "access_token": "token-old",
+                "refresh_token": "refresh-123",
+                "id_token": old_id_token,
+                "account_id": "acct-old",
+                "expires_at": time.time() - 10,
+            }
+        )
+
+        with patch.object(
+            authenticator,
+            "_refresh_tokens",
+            return_value={
+                "access_token": "token-new",
+                "refresh_token": "refresh-456",
+                "id_token": new_id_token,
+            },
+        ):
+            token = authenticator.get_access_token()
+            account_id = authenticator.get_account_id()
+
+        assert token == "token-new"
+        assert account_id == "acct-new"
+        assert authenticator._read_auth_file.call_count == 1

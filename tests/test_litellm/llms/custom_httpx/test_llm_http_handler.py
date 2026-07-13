@@ -9,9 +9,10 @@ import pytest
 sys.path.insert(0, os.path.abspath("../../../.."))  # Adds the parent directory to the system path
 import litellm
 from litellm.integrations.code_interpreter_interception.handler import (
-    CodeInterpreterInterceptionLogger,
     LITELLM_CODE_EXECUTION_TOOL_NAME,
+    CodeInterpreterInterceptionLogger,
 )
+from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.custom_httpx.llm_http_handler import (
     BaseLLMHTTPHandler,
@@ -114,6 +115,60 @@ def test_response_api_handler_streams_when_provider_transform_adds_stream():
 
     assert client.post.call_args.kwargs["stream"] is True
     assert client.post.call_args.kwargs["json"]["stream"] is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["chatgpt/gpt-5.6-terra", "chatgpt/gpt-5.6-luna"],
+)
+def test_chatgpt_gpt_5_6_transform_reaches_streaming_transport(model):
+    handler = BaseLLMHTTPHandler()
+    config = ChatGPTResponsesAPIConfig()
+    config.validate_environment = Mock(return_value={})
+    config.get_complete_url = Mock(return_value="https://chatgpt.example.com/responses")
+    config.sign_request = Mock(return_value=({}, None))
+    client = HTTPHandler(client=httpx.Client(trust_env=False))
+    client.post = Mock(
+        return_value=httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://chatgpt.example.com/responses"),
+        )
+    )
+    text = {
+        "format": {
+            "type": "json_schema",
+            "name": "semantic_extraction",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
+        }
+    }
+
+    handler.response_api_handler(
+        model=model,
+        input="hi",
+        responses_api_provider_config=config,
+        response_api_optional_request_params={
+            "reasoning": {"effort": "xhigh"},
+            "text": text,
+            "parallel_tool_calls": False,
+        },
+        custom_llm_provider="chatgpt",
+        litellm_params=GenericLiteLLMParams(),
+        logging_obj=Mock(),
+        client=client,
+    )
+
+    outbound = client.post.call_args.kwargs
+    assert outbound["stream"] is True
+    assert outbound["json"]["stream"] is True
+    assert outbound["json"]["reasoning"] == {"effort": "xhigh"}
+    assert outbound["json"]["text"] == text
+    assert outbound["json"]["parallel_tool_calls"] is False
 
 
 def test_response_api_handler_runs_agentic_hooks_in_sync_path(monkeypatch):
@@ -1014,6 +1069,7 @@ def _make_responses_handler_call(signed_body):
     signing provider (e.g. Bedrock Mantle).
     """
     from unittest.mock import MagicMock
+
     from litellm.llms.custom_httpx.http_handler import HTTPHandler
     from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
     from litellm.types.router import GenericLiteLLMParams
@@ -1069,6 +1125,7 @@ def test_responses_handler_signs_after_fake_stream_prep_strips_stream():
     We snapshot request_data at sign time and assert "stream" is already gone.
     """
     from unittest.mock import MagicMock
+
     from litellm.llms.custom_httpx.http_handler import HTTPHandler
     from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
     from litellm.types.llms.openai import ResponsesAPIResponse
@@ -1132,6 +1189,7 @@ def _make_compact_handler_call(signed_body, is_async):
     signing provider (e.g. Bedrock Mantle SigV4 / bearer).
     """
     from unittest.mock import MagicMock
+
     from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
     from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
     from litellm.types.router import GenericLiteLLMParams
@@ -1233,7 +1291,13 @@ async def test_async_anthropic_messages_handler_passes_api_key_to_agentic_hooks(
     )
     mock_config.sign_request = Mock(return_value=({}, None))
 
-    fake_raw_response = {"id": "msg_1", "type": "message", "role": "assistant", "content": [], "stop_reason": "end_turn"}
+    fake_raw_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [],
+        "stop_reason": "end_turn",
+    }
     mock_config.transform_anthropic_messages_response = Mock(return_value=fake_raw_response)
 
     mock_logging_obj = Mock()
@@ -1253,10 +1317,17 @@ async def test_async_anthropic_messages_handler_passes_api_key_to_agentic_hooks(
     mock_httpx_response.status_code = 200
 
     with (
-        patch.object(handler, "_async_post_anthropic_messages_with_http_error_retry", new=AsyncMock(return_value=mock_httpx_response)),
+        patch.object(
+            handler,
+            "_async_post_anthropic_messages_with_http_error_retry",
+            new=AsyncMock(return_value=mock_httpx_response),
+        ),
         patch.object(handler, "_call_agentic_completion_hooks", side_effect=fake_agentic_hooks),
         patch("litellm.llms.custom_httpx.llm_http_handler.get_async_httpx_client"),
-        patch("litellm.litellm_core_utils.get_provider_specific_headers.ProviderSpecificHeaderUtils.get_provider_specific_headers", return_value=None),
+        patch(
+            "litellm.litellm_core_utils.get_provider_specific_headers.ProviderSpecificHeaderUtils.get_provider_specific_headers",
+            return_value=None,
+        ),
     ):
         result = await handler.async_anthropic_messages_handler(
             model="claude-haiku",

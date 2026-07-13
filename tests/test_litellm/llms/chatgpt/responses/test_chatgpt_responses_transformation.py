@@ -12,19 +12,44 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+import litellm
+
 sys.path.insert(0, os.path.abspath("../../../../.."))
 
+from litellm.llms.chatgpt.request_auth import ChatGPTRequestAuthContext
+from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
 from litellm.llms.openai.common_utils import OpenAIError
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.utils import LlmProviders
 from litellm.utils import ProviderConfigManager
-from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
 
 
 class TestChatGPTResponsesAPITransformation:
     @pytest.mark.parametrize(
         "model_name",
+        ["chatgpt/gpt-5.6-terra", "chatgpt/gpt-5.6-luna"],
+    )
+    def test_chatgpt_gpt_5_6_capability_metadata_without_pricing(self, model_name):
+        assert model_name in litellm.chatgpt_models
+
+        model_info = litellm.get_model_info(model_name)
+        assert model_info["litellm_provider"] == "chatgpt"
+        assert model_info["mode"] == "responses"
+        assert model_info["supports_native_streaming"] is True
+        assert model_info["supports_reasoning"] is True
+        assert model_info["supports_xhigh_reasoning_effort"] is True
+        assert model_info["supports_response_schema"] is True
+        raw_model_info = litellm.model_cost[model_name]
+        assert raw_model_info["supports_parallel_function_calling"] is True
+        assert "/v1/responses" in raw_model_info["supported_endpoints"]
+        assert "input_cost_per_token" not in raw_model_info
+        assert "output_cost_per_token" not in raw_model_info
+
+    @pytest.mark.parametrize(
+        "model_name",
         [
+            "chatgpt/gpt-5.6-terra",
+            "chatgpt/gpt-5.6-luna",
             "chatgpt/gpt-5.4",
             "chatgpt/gpt-5.4-pro",
             "chatgpt/gpt-5.3-chat-latest",
@@ -54,23 +79,28 @@ class TestChatGPTResponsesAPITransformation:
         url = config.get_complete_url(api_base=None, litellm_params={})
         assert url == "https://chatgpt.example.com/responses"
 
-        custom_url = config.get_complete_url(
-            api_base="https://custom.chatgpt.com", litellm_params={}
-        )
+        custom_url = config.get_complete_url(api_base="https://custom.chatgpt.com", litellm_params={})
         assert custom_url == "https://custom.chatgpt.com/responses"
 
-        url_with_slash = config.get_complete_url(
-            api_base="https://chatgpt.example.com/", litellm_params={}
-        )
+        url_with_slash = config.get_complete_url(api_base="https://chatgpt.example.com/", litellm_params={})
         assert url_with_slash == "https://chatgpt.example.com/responses"
 
-    @patch("litellm.llms.chatgpt.responses.transformation.Authenticator")
-    def test_validate_environment_headers(self, mock_authenticator_class):
-        mock_auth_instance = MagicMock()
-        mock_auth_instance.get_access_token.return_value = "access-123"
-        mock_auth_instance.get_account_id.return_value = "acct-123"
-        mock_authenticator_class.return_value = mock_auth_instance
-
+    @patch("litellm.llms.chatgpt.responses.transformation.resolve_chatgpt_request_auth")
+    def test_validate_environment_headers(self, mock_resolve_auth):
+        mock_resolve_auth.return_value = ChatGPTRequestAuthContext(
+            api_base="https://chatgpt.example.com",
+            access_token="access-123",
+            account_id="acct-123",
+            session_id="session-123",
+            default_headers={
+                "Authorization": "Bearer access-123",
+                "ChatGPT-Account-Id": "acct-123",
+                "originator": "default-origin",
+                "content-type": "application/json",
+                "accept": "text/event-stream",
+                "session_id": "session-123",
+            },
+        )
         config = ChatGPTResponsesAPIConfig()
         litellm_params = GenericLiteLLMParams(litellm_session_id="session-123")
         headers = config.validate_environment(
@@ -85,6 +115,7 @@ class TestChatGPTResponsesAPITransformation:
         assert headers["content-type"] == "application/json"
         assert headers["accept"] == "text/event-stream"
         assert headers["session_id"] == "session-123"
+        mock_resolve_auth.assert_called_once_with(config.authenticator, litellm_params)
 
     @pytest.mark.parametrize(
         "model_name",
@@ -107,6 +138,36 @@ class TestChatGPTResponsesAPITransformation:
         assert "reasoning.encrypted_content" in request["include"]
         assert request["instructions"].startswith("You are Codex, based on GPT-5.")
 
+    def test_chatgpt_preserves_structured_text_and_parallel_tool_calls(self):
+        config = ChatGPTResponsesAPIConfig()
+        text = {
+            "format": {
+                "type": "json_schema",
+                "name": "semantic_extraction",
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            }
+        }
+
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.6-terra",
+            input="hi",
+            response_api_optional_request_params={
+                "text": text,
+                "parallel_tool_calls": False,
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["text"] == text
+        assert request["parallel_tool_calls"] is False
+
     @pytest.mark.parametrize(
         "model_name",
         [
@@ -124,9 +185,7 @@ class TestChatGPTResponsesAPITransformation:
                 "user": "user_123",
                 "temperature": 0.2,
                 "top_p": 0.9,
-                "context_management": [
-                    {"type": "compaction", "compact_threshold": 200000}
-                ],
+                "context_management": [{"type": "compaction", "compact_threshold": 200000}],
                 "metadata": {"foo": "bar"},
                 "max_output_tokens": 123,
                 "stream_options": {"include_usage": True},
@@ -165,9 +224,7 @@ class TestChatGPTResponsesAPITransformation:
             ("chatgpt/gpt-5.3-codex", "gpt-5.3-codex"),
         ],
     )
-    def test_chatgpt_non_stream_sse_response_parsing(
-        self, model_name: str, response_model: str
-    ):
+    def test_chatgpt_non_stream_sse_response_parsing(self, model_name: str, response_model: str):
         config = ChatGPTResponsesAPIConfig()
         response_payload = {
             "id": "resp_test",
@@ -190,9 +247,7 @@ class TestChatGPTResponsesAPITransformation:
                 "",
             ]
         )
-        raw_response = httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, text=sse_body
-        )
+        raw_response = httpx.Response(200, headers={"content-type": "text/event-stream"}, text=sse_body)
         logging_obj = MagicMock()
 
         parsed = config.transform_response_api_response(
@@ -210,9 +265,7 @@ class TestChatGPTResponsesAPITransformation:
             ("chatgpt/gpt-5.3-codex", "gpt-5.3-codex"),
         ],
     )
-    def test_chatgpt_non_stream_sse_response_recovers_output_items(
-        self, model_name: str, response_model: str
-    ):
+    def test_chatgpt_non_stream_sse_response_recovers_output_items(self, model_name: str, response_model: str):
         config = ChatGPTResponsesAPIConfig()
         response_payload = {
             "id": "resp_test",
@@ -235,9 +288,7 @@ class TestChatGPTResponsesAPITransformation:
                 "",
             ]
         )
-        raw_response = httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, text=sse_body
-        )
+        raw_response = httpx.Response(200, headers={"content-type": "text/event-stream"}, text=sse_body)
         logging_obj = MagicMock()
 
         parsed = config.transform_response_api_response(
@@ -247,6 +298,85 @@ class TestChatGPTResponsesAPITransformation:
         )
 
         assert parsed.output_text == "Hello from stream!"
+
+    def test_chatgpt_sse_merges_convertible_items_and_deduplicates_ids(self):
+        config = ChatGPTResponsesAPIConfig()
+        reasoning_item = {
+            "id": "reasoning_test",
+            "type": "reasoning",
+            "summary": [],
+            "content": None,
+            "encrypted_content": None,
+            "status": None,
+        }
+        message_item = {
+            "id": "msg_test",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "OK"}],
+        }
+        function_item = {
+            "id": "fc_test",
+            "type": "function_call",
+            "status": "completed",
+            "name": "record_result",
+            "call_id": "call_test",
+            "arguments": '{"answer":"OK"}',
+        }
+        response_payload = {
+            "id": "resp_test",
+            "object": "response",
+            "created_at": 1700000000,
+            "status": "completed",
+            "model": "gpt-5.6-terra",
+            "output": [reasoning_item],
+        }
+        events = [
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": reasoning_item,
+            },
+            {
+                "type": "response.output_item.done",
+                "output_index": 1,
+                "item": message_item,
+            },
+            {
+                "type": "response.output_item.done",
+                "output_index": 2,
+                "item": message_item,
+            },
+            {
+                "type": "response.output_item.done",
+                "output_index": 3,
+                "item": function_item,
+            },
+            {"type": "response.completed", "response": response_payload},
+        ]
+        sse_body = "\n".join([*(f"data: {json.dumps(event)}" for event in events), "data: [DONE]", ""])
+        raw_response = httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=sse_body,
+        )
+
+        parsed = config.transform_response_api_response(
+            model="chatgpt/gpt-5.6-terra",
+            raw_response=raw_response,
+            logging_obj=MagicMock(),
+        )
+
+        assert parsed.output_text == "OK"
+        output_ids = [config._get_output_item_value(item, "id") for item in parsed.output]
+        assert output_ids == ["reasoning_test", "msg_test", "fc_test"]
+        function_names = [
+            config._get_output_item_value(item, "name")
+            for item in parsed.output
+            if config._get_output_item_value(item, "type") == "function_call"
+        ]
+        assert function_names == ["record_result"]
 
     def test_chatgpt_non_stream_sse_recovers_whitespace_padded_chunks(self):
         """Chunks with leading whitespace before `data:` must still parse.
@@ -277,9 +407,7 @@ class TestChatGPTResponsesAPITransformation:
                 "",
             ]
         )
-        raw_response = httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, text=sse_body
-        )
+        raw_response = httpx.Response(200, headers={"content-type": "text/event-stream"}, text=sse_body)
         logging_obj = MagicMock()
 
         parsed = config.transform_response_api_response(
@@ -312,9 +440,7 @@ class TestChatGPTResponsesAPITransformation:
                 "",
             ]
         )
-        raw_response = httpx.Response(
-            502, headers={"content-type": "text/event-stream"}, text=sse_body
-        )
+        raw_response = httpx.Response(502, headers={"content-type": "text/event-stream"}, text=sse_body)
         logging_obj = MagicMock()
 
         with pytest.raises(OpenAIError) as exc_info:

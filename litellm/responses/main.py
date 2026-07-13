@@ -35,6 +35,7 @@ from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 from litellm.responses.litellm_completion_transformation.handler import (
     LiteLLMCompletionTransformationHandler,
 )
+from litellm.responses.mcp.routing import should_use_litellm_mcp_gateway
 from litellm.responses.utils import ResponsesAPIRequestUtils
 from litellm.types.llms.openai import (
     AllMessageValues,
@@ -729,11 +730,7 @@ def _responses_try_dispatch_mcp_gateway(
     _is_async: bool,
 ) -> Optional[Any]:
     """Return a response when MCP gateway handles the call; otherwise None."""
-    from litellm.responses.mcp.litellm_proxy_mcp_handler import (
-        LiteLLM_Proxy_MCP_Handler,
-    )
-
-    if not LiteLLM_Proxy_MCP_Handler._should_use_litellm_mcp_gateway(tools=tools):
+    if not should_use_litellm_mcp_gateway(tools):
         return None
     mcp_call_kwargs = {
         "input": input,

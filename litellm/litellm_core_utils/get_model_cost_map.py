@@ -260,6 +260,12 @@ def _finalize_model_cost_map(model_cost: dict) -> dict:
     return _expand_model_aliases(model_cost)
 
 
+def _merge_remote_with_local_entries(remote_model_cost: dict) -> dict:
+    merged_model_cost = GetModelCostMap.load_local_model_cost_map()
+    merged_model_cost.update(remote_model_cost)
+    return merged_model_cost
+
+
 def get_model_cost_map(url: str) -> dict:
     """
     Public entry point — returns the model cost map dict.
@@ -311,4 +317,4 @@ def get_model_cost_map(url: str) -> dict:
 
     _cost_map_source_info.source = "remote"
     _cost_map_source_info.fallback_reason = None
-    return _finalize_model_cost_map(content)
+    return _finalize_model_cost_map(_merge_remote_with_local_entries(content))
